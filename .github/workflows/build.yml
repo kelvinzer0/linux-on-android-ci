@@ -45,18 +45,180 @@ jobs:
     
     - name: Download RootFS
       run: |
-        echo "Downloading rootfs..."
-        wget -q --show-progress "${{ inputs.rootfs_url }}" -O rootfs.tar.xz
+        echo "================================================"
+        echo "  Downloading RootFS"
+        echo "================================================"
         
-        echo "Validating..."
-        if [[ "${{ inputs.rootfs_url }}" == *.tar.xz ]]; then
-          xz -t rootfs.tar.xz
-        elif [[ "${{ inputs.rootfs_url }}" == *.tar.gz ]]; then
-          gzip -t rootfs.tar.xz
+        ORIGINAL_URL="${{ inputs.rootfs_url }}"
+        FILENAME=$(basename "$ORIGINAL_URL")
+        
+        echo "Source: $FILENAME"
+        wget -q --show-progress "$ORIGINAL_URL" -O "original-$FILENAME"
+        
+        if [ ! -f "original-$FILENAME" ]; then
+          echo "ERROR: Download failed!"
+          exit 1
         fi
         
-        SIZE=$(stat -c%s rootfs.tar.xz)
-        echo "Size: $((SIZE / 1024 / 1024))MB"
+        ORIGINAL_SIZE=$(stat -c%s "original-$FILENAME")
+        echo "Downloaded: $(numfmt --to=iec-i --suffix=B $ORIGINAL_SIZE)"
+        
+        echo ""
+        echo "================================================"
+        echo "  Validating Archive Integrity"
+        echo "================================================"
+        
+        # Validate compression
+        if [[ "$FILENAME" == *.tar.xz ]]; then
+          echo "Format: tar.xz"
+          if xz -t "original-$FILENAME" 2>&1; then
+            echo "✓ XZ compression valid"
+          else
+            echo "✗ XZ validation failed!"
+            exit 1
+          fi
+        elif [[ "$FILENAME" == *.tar.gz ]] || [[ "$FILENAME" == *.tgz ]]; then
+          echo "Format: tar.gz"
+          if gzip -t "original-$FILENAME" 2>&1; then
+            echo "✓ GZIP compression valid"
+          else
+            echo "✗ GZIP validation failed!"
+            exit 1
+          fi
+        elif [[ "$FILENAME" == *.tar.bz2 ]]; then
+          echo "Format: tar.bz2"
+          if bzip2 -t "original-$FILENAME" 2>&1; then
+            echo "✓ BZIP2 compression valid"
+          else
+            echo "✗ BZIP2 validation failed!"
+            exit 1
+          fi
+        elif [[ "$FILENAME" == *.tar ]]; then
+          echo "Format: tar (uncompressed)"
+        else
+          echo "✗ Unknown format: $FILENAME"
+          exit 1
+        fi
+        
+        echo ""
+        echo "================================================"
+        echo "  Extracting & Validating RootFS Structure"
+        echo "================================================"
+        
+        # Extract to temporary directory
+        EXTRACT_DIR="rootfs_temp"
+        mkdir -p "$EXTRACT_DIR"
+        
+        echo "Extracting archive..."
+        if tar -xpf "original-$FILENAME" -C "$EXTRACT_DIR" 2>&1 | head -20; then
+          echo "✓ Extraction successful"
+        else
+          echo "✗ Extraction failed!"
+          exit 1
+        fi
+        
+        # Check rootfs structure
+        echo ""
+        echo "Checking rootfs structure..."
+        
+        ROOTFS_ROOT="$EXTRACT_DIR"
+        
+        # Find actual rootfs root (might be nested)
+        if [ -d "$EXTRACT_DIR"/*/ ]; then
+          FIRST_DIR=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+          if [ -d "$FIRST_DIR/bin" ] || [ -d "$FIRST_DIR/usr" ]; then
+            ROOTFS_ROOT="$FIRST_DIR"
+            echo "Found nested rootfs at: $(basename $FIRST_DIR)"
+          fi
+        fi
+        
+        # Validate essential directories
+        REQUIRED_DIRS="bin etc usr"
+        MISSING_DIRS=""
+        
+        for dir in $REQUIRED_DIRS; do
+          if [ -d "$ROOTFS_ROOT/$dir" ]; then
+            echo "  ✓ /$dir exists"
+          else
+            echo "  ✗ /$dir missing"
+            MISSING_DIRS="$MISSING_DIRS $dir"
+          fi
+        done
+        
+        if [ -n "$MISSING_DIRS" ]; then
+          echo ""
+          echo "WARNING: Missing directories:$MISSING_DIRS"
+          echo "This might not be a valid Linux rootfs!"
+          read -t 10 -p "Continue anyway? (y/N): " response || response="y"
+          if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "Aborted by user"
+            exit 1
+          fi
+        fi
+        
+        # Count files
+        TOTAL_FILES=$(find "$ROOTFS_ROOT" -type f | wc -l)
+        TOTAL_DIRS=$(find "$ROOTFS_ROOT" -type d | wc -l)
+        echo ""
+        echo "RootFS contents:"
+        echo "  Files: $TOTAL_FILES"
+        echo "  Directories: $TOTAL_DIRS"
+        
+        # Show top-level structure
+        echo ""
+        echo "Top-level structure:"
+        ls -lah "$ROOTFS_ROOT" | head -20
+        
+        echo ""
+        echo "================================================"
+        echo "  Repacking RootFS (Standardized)"
+        echo "================================================"
+        
+        # Repack with optimal compression
+        echo "Creating standardized tar.xz archive..."
+        
+        cd "$ROOTFS_ROOT"
+        tar -cpf - . | xz -9e -T0 > ../rootfs.tar.xz
+        cd ..
+        
+        if [ ! -f "rootfs.tar.xz" ]; then
+          echo "✗ Repacking failed!"
+          exit 1
+        fi
+        
+        REPACKED_SIZE=$(stat -c%s rootfs.tar.xz)
+        
+        echo "✓ Repacking complete"
+        echo ""
+        echo "================================================"
+        echo "  Summary"
+        echo "================================================"
+        echo "Original archive:"
+        echo "  Size: $(numfmt --to=iec-i --suffix=B $ORIGINAL_SIZE)"
+        echo "  Format: $FILENAME"
+        echo ""
+        echo "Repacked archive:"
+        echo "  Size: $(numfmt --to=iec-i --suffix=B $REPACKED_SIZE)"
+        echo "  Format: tar.xz (XZ level 9)"
+        echo "  Compression: $(echo "scale=1; ($ORIGINAL_SIZE - $REPACKED_SIZE) * 100 / $ORIGINAL_SIZE" | bc)% saved"
+        echo ""
+        
+        # Verify repacked archive
+        echo "Verifying repacked archive..."
+        if xz -t rootfs.tar.xz && tar -tf rootfs.tar.xz > /dev/null; then
+          echo "✓ Repacked archive is valid"
+        else
+          echo "✗ Repacked archive validation failed!"
+          exit 1
+        fi
+        
+        # Cleanup
+        rm -rf "$EXTRACT_DIR" "original-$FILENAME"
+        
+        echo ""
+        echo "================================================"
+        echo "  ✓ RootFS Ready for Installation"
+        echo "================================================"
     
     - name: Download Magisk
       if: inputs.include_magisk == true
@@ -231,20 +393,13 @@ jobs:
           NAME=$(basename "$archive")
           ui_print "$NAME"
           
-          case "$archive" in
-            *.tar.xz) CMD="xz -dc" ;;
-            *.tar.gz) CMD="gzip -dc" ;;
-            *.tar.bz2) CMD="bzip2 -dc" ;;
-            *) CMD="cat" ;;
-          esac
-          
           DIR="${NAME%.tar.*}"
           DEST="$ROOTFS_BASE/$DIR"
           
           rm -rf "$DEST"
           mkdir -p "$DEST"
           
-          if $CMD "$archive" | tar -xpf - -C "$DEST" 2>/dev/null; then
+          if tar -xpf "$archive" -C "$DEST" 2>/dev/null; then
             ui_print "OK: $DIR"
           else
             ui_print "Failed: $DIR"
