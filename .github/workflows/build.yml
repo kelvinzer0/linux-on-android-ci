@@ -45,10 +45,10 @@ jobs:
     
     - name: Download RootFS
       run: |
-        echo "📥 Downloading rootfs..."
+        echo "Downloading rootfs..."
         wget -q --show-progress "${{ inputs.rootfs_url }}" -O rootfs.tar.xz
         
-        echo "🔍 Validating..."
+        echo "Validating..."
         if [[ "${{ inputs.rootfs_url }}" == *.tar.xz ]]; then
           xz -t rootfs.tar.xz
         elif [[ "${{ inputs.rootfs_url }}" == *.tar.gz ]]; then
@@ -56,12 +56,12 @@ jobs:
         fi
         
         SIZE=$(stat -c%s rootfs.tar.xz)
-        echo "✓ Size: $((SIZE / 1024 / 1024))MB"
+        echo "Size: $((SIZE / 1024 / 1024))MB"
     
     - name: Download Magisk
       if: inputs.include_magisk == true
       run: |
-        echo "📥 Downloading Magisk..."
+        echo "Downloading Magisk..."
         
         if [ "${{ inputs.magisk_version }}" = "latest" ]; then
           MAGISK_VER=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | jq -r '.tag_name' | sed 's/v//')
@@ -75,15 +75,15 @@ jobs:
         wget -q --show-progress "$MAGISK_URL" -O Magisk.apk
         
         if [ ! -f "Magisk.apk" ] || [ $(stat -c%s Magisk.apk) -lt 1000000 ]; then
-          echo "❌ Magisk download failed!"
+          echo "Magisk download failed"
           exit 1
         fi
         
-        echo "✓ Magisk downloaded: $(stat -c%s Magisk.apk | numfmt --to=iec-i --suffix=B)"
+        echo "Magisk downloaded successfully"
     
     - name: Create Installer Structure
       run: |
-        echo "📦 Building installer structure..."
+        echo "Building installer structure..."
         
         mkdir -p installer/META-INF/com/google/android
         mkdir -p installer/system/rootfs
@@ -94,561 +94,432 @@ jobs:
         
         if [ -f "Magisk.apk" ]; then
           cp Magisk.apk installer/magisk/
-          echo "✓ Magisk included in installer"
+          echo "Magisk included"
         fi
     
-    - name: Create Main Update Binary
+    - name: Create Update Binary
       run: |
-        cat > installer/META-INF/com/google/android/update-binary << 'UPDATEBIN'
-#!/sbin/sh
-
-OUTFD=$2
-ZIP=$3
-
-ui_print() {
-  echo "ui_print $1" > /proc/self/fd/$OUTFD
-  echo "ui_print" > /proc/self/fd/$OUTFD
-}
-
-abort() {
-  ui_print " "
-  ui_print "ERROR: $1"
-  ui_print " "
-  exit 1
-}
-
-set_progress() {
-  echo "set_progress $1" > /proc/self/fd/$OUTFD
-}
-
-check_root() {
-  if command -v su >/dev/null 2>&1; then
-    if su -c "id" 2>/dev/null | grep -q "uid=0"; then
-      return 0
-    fi
-  fi
-  return 1
-}
-
-install_magisk() {
-  ui_print "================================"
-  ui_print "  Installing Magisk..."
-  ui_print "================================"
-  ui_print " "
-  
-  if [ ! -f "magisk/Magisk.apk" ]; then
-    ui_print "Magisk not included"
-    return 1
-  fi
-  
-  ui_print "-> Extracting Magisk..."
-  
-  MAGISK_TMP="/tmp/magisk_install"
-  rm -rf $MAGISK_TMP
-  mkdir -p $MAGISK_TMP
-  
-  unzip -o magisk/Magisk.apk -d $MAGISK_TMP >/dev/null 2>&1
-  
-  ARCH64="lib/arm64-v8a"
-  ARCH32="lib/armeabi-v7a"
-  
-  if [ -d "$MAGISK_TMP/$ARCH64" ]; then
-    MAGISK_ARCH=$ARCH64
-    ui_print "-> Architecture: ARM64"
-  elif [ -d "$MAGISK_TMP/$ARCH32" ]; then
-    MAGISK_ARCH=$ARCH32
-    ui_print "-> Architecture: ARM32"
-  else
-    ui_print "Unsupported architecture"
-    return 1
-  fi
-  
-  ui_print "-> Installing to boot..."
-  
-  BOOT_PART=$(find /dev/block -name boot 2>/dev/null | head -1)
-  if [ -z "$BOOT_PART" ]; then
-    BOOT_PART=$(find /dev/block -name "boot*" 2>/dev/null | head -1)
-  fi
-  
-  if [ -z "$BOOT_PART" ]; then
-    ui_print "Boot partition not found"
-    ui_print "Saving Magisk.apk to /sdcard/"
-    cp magisk/Magisk.apk /sdcard/
-    return 1
-  fi
-  
-  ui_print "-> Boot: $BOOT_PART"
-  
-  if [ -f "$MAGISK_TMP/$MAGISK_ARCH/libmagiskboot.so" ]; then
-    mkdir -p /data/adb
-    cp $MAGISK_TMP/$MAGISK_ARCH/libmagiskboot.so /data/adb/magiskboot
-    chmod 755 /data/adb/magiskboot
-    
-    cd /data/adb
-    ./magiskboot unpack $BOOT_PART 2>/dev/null
-    ./magiskboot patch boot.img 2>/dev/null
-    
-    if [ -f "new-boot.img" ]; then
-      dd if=new-boot.img of=$BOOT_PART 2>/dev/null
-      ui_print "✓ Magisk installed!"
-      return 0
-    fi
-  fi
-  
-  ui_print "Auto-install failed"
-  ui_print "Magisk.apk saved to /sdcard/"
-  cp magisk/Magisk.apk /sdcard/
-  return 1
-}
-
-ui_print " "
-ui_print "================================"
-ui_print "  TWRP RootFS Installer"
-ui_print "  with Magisk Support"
-ui_print "================================"
-ui_print " "
-
-set_progress 0.1
-
-TMPDIR="/tmp/rootfs_installer_$$"
-rm -rf $TMPDIR
-mkdir -p $TMPDIR
-cd $TMPDIR
-
-ui_print "-> Extracting installer..."
-unzip -o "$ZIP" >/dev/null 2>&1 || abort "Extract failed"
-
-set_progress 0.2
-
-ui_print " "
-ui_print "================================"
-ui_print "  Checking Root Status"
-ui_print "================================"
-ui_print " "
-
-ROOTED=0
-if check_root; then
-  ui_print "✓ Device is ROOTED"
-  ROOTED=1
-else
-  ui_print "Device is NOT ROOTED"
-  
-  if [ -f "magisk/Magisk.apk" ]; then
-    ui_print " "
-    ui_print "-> Installing Magisk..."
-    ui_print " "
-    
-    if install_magisk; then
-      ROOTED=1
-      ui_print " "
-      ui_print "✓ Magisk installed!"
-      ui_print "✓ Device is now ROOTED"
-    else
-      ui_print " "
-      ui_print "Continuing without root..."
-      ui_print "Auto-boot will NOT work"
-    fi
-  else
-    ui_print " "
-    ui_print "Magisk not included"
-    ui_print "Auto-boot will NOT work"
-  fi
-fi
-
-set_progress 0.4
-
-ui_print " "
-ui_print "================================"
-ui_print "  Installing RootFS"
-ui_print "================================"
-ui_print " "
-
-ROOTFS_BASE="/data/local/rootfs"
-mkdir -p $ROOTFS_BASE
-
-for archive in system/rootfs/*.tar.*; do
-  [ -f "$archive" ] || continue
-  
-  NAME=$(basename "$archive")
-  ui_print "-> $NAME"
-  
-  case "$archive" in
-    *.tar.xz) CMD="xz -dc" ;;
-    *.tar.gz) CMD="gzip -dc" ;;
-    *.tar.bz2) CMD="bzip2 -dc" ;;
-    *) CMD="cat" ;;
-  esac
-  
-  DIR="${NAME%.tar.*}"
-  DEST="$ROOTFS_BASE/$DIR"
-  
-  rm -rf "$DEST"
-  mkdir -p "$DEST"
-  
-  ui_print "  Extracting..."
-  if $CMD "$archive" | tar -xpf - -C "$DEST" 2>/dev/null; then
-    ui_print "  ✓ $DIR"
-  else
-    ui_print "  Failed: $DIR"
-    continue
-  fi
-  
-  if [ -f system/rootfs/boot-chroot.sh ]; then
-    cp system/rootfs/boot-chroot.sh "$DEST/"
-    chmod 755 "$DEST/boot-chroot.sh"
-  fi
-  
-  if [ -f system/rootfs/auto-boot.sh ]; then
-    cp system/rootfs/auto-boot.sh "$DEST/"
-    chmod 755 "$DEST/auto-boot.sh"
-  fi
-done
-
-set_progress 0.7
-
-ui_print " "
-ui_print "-> Creating launcher..."
-
-cat > $ROOTFS_BASE/launch.sh << 'LAUNCH'
-#!/system/bin/sh
-
-echo " "
-echo "================================"
-echo "   RootFS Launcher"
-echo "================================"
-echo " "
-echo "Available RootFS:"
-echo " "
-
-i=1
-for d in /data/local/rootfs/*/; do
-  if [ -d "$d" ]; then
-    name=$(basename "$d")
-    echo "  $i) $name"
-    i=$((i+1))
-  fi
-done
-
-echo " "
-echo "================================"
-printf "Select [1-%d] or 'q': " $((i-1))
-read choice
-
-[ "$choice" = "q" ] && exit 0
-
-i=1
-for d in /data/local/rootfs/*/; do
-  if [ -d "$d" ]; then
-    if [ $i -eq $choice ] 2>/dev/null; then
-      echo " "
-      echo "Launching: $(basename "$d")"
-      cd "$d"
-      if [ -f boot-chroot.sh ]; then
-        exec ./boot-chroot.sh
-      else
-        exec chroot "$d" /bin/bash
-      fi
-    fi
-    i=$((i+1))
-  fi
-done
-
-echo "Invalid selection!"
-exit 1
-LAUNCH
-
-chmod 755 $ROOTFS_BASE/launch.sh
-
-if [ -f system/bin/busybox ]; then
-  cp system/bin/busybox $ROOTFS_BASE/
-  chmod 755 $ROOTFS_BASE/busybox
-  ui_print "✓ Busybox included"
-fi
-
-set_progress 0.8
-
-if [ $ROOTED -eq 1 ]; then
-  ui_print " "
-  ui_print "-> Setting up auto-boot..."
-  
-  mkdir -p /data/adb/service.d
-  
-  cat > /data/adb/service.d/rootfs-boot.sh << 'AUTOBOOT'
-#!/system/bin/sh
-
-while [ "$(getprop sys.boot_completed)" != "1" ]; do
-  sleep 1
-done
-
-sleep 10
-
-LOG="/data/local/rootfs-boot.log"
-exec > $LOG 2>&1
-
-echo "================================"
-echo "RootFS Auto-Boot"
-echo "Started: $(date)"
-echo "================================"
-
-for ROOTFS in /data/local/rootfs/*/; do
-  [ ! -d "$ROOTFS" ] && continue
-  [ ! -f "$ROOTFS/auto-boot.sh" ] && continue
-  
-  echo " "
-  echo "-> $(basename "$ROOTFS")"
-  
-  if sh "$ROOTFS/auto-boot.sh" 2>&1; then
-    echo "✓ Success"
-  else
-    echo "Failed"
-  fi
-done
-
-echo " "
-echo "================================"
-echo "Complete: $(date)"
-echo "================================"
-AUTOBOOT
-
-  chmod 755 /data/adb/service.d/rootfs-boot.sh
-  ui_print "✓ Auto-boot installed"
-fi
-
-set_progress 0.9
-
-cat > $ROOTFS_BASE/README.txt << README
-================================
-TWRP RootFS Installer
-================================
-
-Installed: $(date)
-Location: $ROOTFS_BASE
-Root: $([ $ROOTED -eq 1 ] && echo "YES" || echo "NO")
-
-================================
-USAGE
-================================
-
-Launcher:
-  su
-  $ROOTFS_BASE/launch.sh
-
-Direct:
-  su
-  cd $ROOTFS_BASE/[distro]
-  ./boot-chroot.sh
-
-================================
-AUTO-BOOT
-================================
-
-$(if [ $ROOTED -eq 1 ]; then
-  echo "Status: ENABLED"
-  echo "Service: /data/adb/service.d/rootfs-boot.sh"
-  echo "Log: /data/local/rootfs-boot.log"
-else
-  echo "Status: DISABLED (no root)"
-  echo " "
-  echo "To enable:"
-  echo "1. Install Magisk"
-  echo "2. Flash this ZIP again"
-fi)
-
-================================
-UNINSTALL
-================================
-
-  su
-  rm -rf $ROOTFS_BASE
-  rm -f /data/adb/service.d/rootfs-boot.sh
-
-================================
-README
-
-rm -rf $TMPDIR
-
-set_progress 1.0
-
-ui_print " "
-ui_print "================================"
-ui_print "  Installation Complete!"
-ui_print "================================"
-ui_print " "
-ui_print "Location: $ROOTFS_BASE"
-ui_print "Launcher: $ROOTFS_BASE/launch.sh"
-ui_print " "
-
-if [ $ROOTED -eq 1 ]; then
-  ui_print "Root: YES"
-  ui_print "Auto-boot: ENABLED"
-else
-  ui_print "Root: NO"
-  ui_print "Auto-boot: DISABLED"
-  if [ -f "/sdcard/Magisk.apk" ]; then
-    ui_print " "
-    ui_print "Magisk.apk saved to:"
-    ui_print "/sdcard/Magisk.apk"
-    ui_print " "
-    ui_print "Install Magisk and flash again"
-  fi
-fi
-
-ui_print " "
-ui_print "================================"
-ui_print " "
-
-exit 0
-UPDATEBIN
-
+        cat > installer/META-INF/com/google/android/update-binary << 'EOF'
+        #!/sbin/sh
+        
+        OUTFD=$2
+        ZIP=$3
+        
+        ui_print() {
+          echo "ui_print $1" > /proc/self/fd/$OUTFD
+          echo "ui_print" > /proc/self/fd/$OUTFD
+        }
+        
+        abort() {
+          ui_print " "
+          ui_print "ERROR: $1"
+          exit 1
+        }
+        
+        set_progress() {
+          echo "set_progress $1" > /proc/self/fd/$OUTFD
+        }
+        
+        check_root() {
+          if command -v su >/dev/null 2>&1; then
+            if su -c "id" 2>/dev/null | grep -q "uid=0"; then
+              return 0
+            fi
+          fi
+          return 1
+        }
+        
+        install_magisk() {
+          ui_print "Installing Magisk..."
+          
+          if [ ! -f "magisk/Magisk.apk" ]; then
+            return 1
+          fi
+          
+          MAGISK_TMP="/tmp/magisk_install"
+          rm -rf $MAGISK_TMP
+          mkdir -p $MAGISK_TMP
+          
+          unzip -o magisk/Magisk.apk -d $MAGISK_TMP >/dev/null 2>&1
+          
+          ARCH64="lib/arm64-v8a"
+          ARCH32="lib/armeabi-v7a"
+          
+          if [ -d "$MAGISK_TMP/$ARCH64" ]; then
+            MAGISK_ARCH=$ARCH64
+          elif [ -d "$MAGISK_TMP/$ARCH32" ]; then
+            MAGISK_ARCH=$ARCH32
+          else
+            return 1
+          fi
+          
+          BOOT_PART=$(find /dev/block -name boot 2>/dev/null | head -1)
+          
+          if [ -z "$BOOT_PART" ]; then
+            ui_print "Boot partition not found"
+            cp magisk/Magisk.apk /sdcard/
+            return 1
+          fi
+          
+          if [ -f "$MAGISK_TMP/$MAGISK_ARCH/libmagiskboot.so" ]; then
+            mkdir -p /data/adb
+            cp $MAGISK_TMP/$MAGISK_ARCH/libmagiskboot.so /data/adb/magiskboot
+            chmod 755 /data/adb/magiskboot
+            
+            cd /data/adb
+            ./magiskboot unpack $BOOT_PART 2>/dev/null
+            ./magiskboot patch boot.img 2>/dev/null
+            
+            if [ -f "new-boot.img" ]; then
+              dd if=new-boot.img of=$BOOT_PART 2>/dev/null
+              ui_print "Magisk installed"
+              return 0
+            fi
+          fi
+          
+          cp magisk/Magisk.apk /sdcard/
+          return 1
+        }
+        
+        ui_print " "
+        ui_print "TWRP RootFS Installer"
+        ui_print " "
+        
+        set_progress 0.1
+        
+        TMPDIR="/tmp/rootfs_installer_$$"
+        rm -rf $TMPDIR
+        mkdir -p $TMPDIR
+        cd $TMPDIR
+        
+        ui_print "Extracting..."
+        unzip -o "$ZIP" >/dev/null 2>&1 || abort "Extract failed"
+        
+        set_progress 0.2
+        
+        ui_print " "
+        ui_print "Checking root..."
+        
+        ROOTED=0
+        if check_root; then
+          ui_print "Device is rooted"
+          ROOTED=1
+        else
+          ui_print "Device not rooted"
+          
+          if [ -f "magisk/Magisk.apk" ]; then
+            if install_magisk; then
+              ROOTED=1
+              ui_print "Device now rooted"
+            else
+              ui_print "Magisk.apk saved to /sdcard/"
+            fi
+          fi
+        fi
+        
+        set_progress 0.4
+        
+        ui_print " "
+        ui_print "Installing rootfs..."
+        
+        ROOTFS_BASE="/data/local/rootfs"
+        mkdir -p $ROOTFS_BASE
+        
+        for archive in system/rootfs/*.tar.*; do
+          [ -f "$archive" ] || continue
+          
+          NAME=$(basename "$archive")
+          ui_print "$NAME"
+          
+          case "$archive" in
+            *.tar.xz) CMD="xz -dc" ;;
+            *.tar.gz) CMD="gzip -dc" ;;
+            *.tar.bz2) CMD="bzip2 -dc" ;;
+            *) CMD="cat" ;;
+          esac
+          
+          DIR="${NAME%.tar.*}"
+          DEST="$ROOTFS_BASE/$DIR"
+          
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          
+          if $CMD "$archive" | tar -xpf - -C "$DEST" 2>/dev/null; then
+            ui_print "OK: $DIR"
+          else
+            ui_print "Failed: $DIR"
+            continue
+          fi
+          
+          if [ -f system/rootfs/boot-chroot.sh ]; then
+            cp system/rootfs/boot-chroot.sh "$DEST/"
+            chmod 755 "$DEST/boot-chroot.sh"
+          fi
+          
+          if [ -f system/rootfs/auto-boot.sh ]; then
+            cp system/rootfs/auto-boot.sh "$DEST/"
+            chmod 755 "$DEST/auto-boot.sh"
+          fi
+        done
+        
+        set_progress 0.7
+        
+        ui_print " "
+        ui_print "Creating launcher..."
+        
+        cat > $ROOTFS_BASE/launch.sh << 'LAUNCHEOF'
+        #!/system/bin/sh
+        
+        echo " "
+        echo "RootFS Launcher"
+        echo "==============="
+        echo " "
+        
+        i=1
+        for d in /data/local/rootfs/*/; do
+          if [ -d "$d" ]; then
+            echo "$i) $(basename "$d")"
+            i=$((i+1))
+          fi
+        done
+        
+        echo " "
+        printf "Select [1-%d]: " $((i-1))
+        read choice
+        
+        i=1
+        for d in /data/local/rootfs/*/; do
+          if [ -d "$d" ]; then
+            if [ $i -eq $choice ] 2>/dev/null; then
+              cd "$d"
+              if [ -f boot-chroot.sh ]; then
+                exec ./boot-chroot.sh
+              else
+                exec chroot "$d" /bin/bash
+              fi
+            fi
+            i=$((i+1))
+          fi
+        done
+        LAUNCHEOF
+        
+        chmod 755 $ROOTFS_BASE/launch.sh
+        
+        if [ -f system/bin/busybox ]; then
+          cp system/bin/busybox $ROOTFS_BASE/
+          chmod 755 $ROOTFS_BASE/busybox
+        fi
+        
+        set_progress 0.8
+        
+        if [ $ROOTED -eq 1 ]; then
+          ui_print "Setting up auto-boot..."
+          
+          mkdir -p /data/adb/service.d
+          
+          cat > /data/adb/service.d/rootfs-boot.sh << 'SERVICEEOF'
+        #!/system/bin/sh
+        
+        while [ "$(getprop sys.boot_completed)" != "1" ]; do
+          sleep 1
+        done
+        
+        sleep 10
+        
+        LOG="/data/local/rootfs-boot.log"
+        exec > $LOG 2>&1
+        
+        echo "RootFS Auto-Boot: $(date)"
+        
+        for ROOTFS in /data/local/rootfs/*/; do
+          [ ! -d "$ROOTFS" ] && continue
+          [ ! -f "$ROOTFS/auto-boot.sh" ] && continue
+          
+          echo "Starting: $(basename "$ROOTFS")"
+          sh "$ROOTFS/auto-boot.sh"
+        done
+        SERVICEEOF
+        
+          chmod 755 /data/adb/service.d/rootfs-boot.sh
+        fi
+        
+        set_progress 0.9
+        
+        cat > $ROOTFS_BASE/README.txt << READMEEOF
+        TWRP RootFS Installer
+        =====================
+        
+        Installed: $(date)
+        Location: $ROOTFS_BASE
+        Root: $([ $ROOTED -eq 1 ] && echo "YES" || echo "NO")
+        
+        Usage:
+          su
+          $ROOTFS_BASE/launch.sh
+        
+        Uninstall:
+          su
+          rm -rf $ROOTFS_BASE
+          rm -f /data/adb/service.d/rootfs-boot.sh
+        READMEEOF
+        
+        rm -rf $TMPDIR
+        
+        set_progress 1.0
+        
+        ui_print " "
+        ui_print "Installation complete!"
+        ui_print " "
+        ui_print "Location: $ROOTFS_BASE"
+        ui_print "Launcher: $ROOTFS_BASE/launch.sh"
+        
+        if [ $ROOTED -eq 1 ]; then
+          ui_print "Root: YES"
+          ui_print "Auto-boot: ENABLED"
+        else
+          ui_print "Root: NO"
+          ui_print "Auto-boot: DISABLED"
+        fi
+        
+        ui_print " "
+        
+        exit 0
+        EOF
+        
         chmod 755 installer/META-INF/com/google/android/update-binary
-        echo "# TWRP Updater Script" > installer/META-INF/com/google/android/updater-script
+        echo "# TWRP" > installer/META-INF/com/google/android/updater-script
     
     - name: Create Boot Scripts
       run: |
-        cat > installer/system/rootfs/boot-chroot.sh << 'BOOTSCRIPT'
-#!/system/bin/sh
-
-ROOTFS="$(cd "$(dirname "$0")" && pwd)"
-
-echo " "
-echo "================================"
-echo "  Starting: $(basename $ROOTFS)"
-echo "================================"
-echo " "
-
-is_mounted() { mount | grep -q " $1 "; }
-
-mount_it() {
-  is_mounted "$2" && echo "  Already: $(basename $2)" && return
-  mount $1 "$2" 2>/dev/null && echo "  ✓ $(basename $2)" || echo "  ✗ $(basename $2)"
-}
-
-echo "-> Setting up..."
-
-mount -o bind $ROOTFS $ROOTFS 2>/dev/null
-mount -o remount,dev,suid /data 2>/dev/null
-
-mount_it "--bind /dev" "$ROOTFS/dev"
-mount_it "--bind /sys" "$ROOTFS/sys"
-mount_it "--bind /proc" "$ROOTFS/proc"
-mount_it "-t devpts devpts" "$ROOTFS/dev/pts"
-
-mkdir -p $ROOTFS/sys/fs/cgroup/devices
-mount_it "-t tmpfs -o mode=755 tmpfs" "$ROOTFS/sys/fs/cgroup"
-mount_it "-t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
-
-if [ -d /dev/binderfs ]; then
-  mkdir -p $ROOTFS/dev/binderfs
-  mount_it "--bind /dev/binderfs" "$ROOTFS/dev/binderfs"
-fi
-
-mkdir -p $ROOTFS/sdcard
-mount_it "--bind /sdcard" "$ROOTFS/sdcard"
-
-for d in /storage/*; do
-  b=$(basename "$d")
-  if [ "$b" != "emulated" ] && [ "$b" != "self" ] && [ -d "$d" ]; then
-    mkdir -p $ROOTFS/external_sd
-    mount_it "--bind $d" "$ROOTFS/external_sd"
-    break
-  fi
-done
-
-cat > $ROOTFS/etc/resolv.conf << DNSEOF
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-nameserver 1.1.1.1
-DNSEOF
-
-echo " "
-echo "================================"
-echo "  Entering chroot..."
-echo "================================"
-echo " "
-
-if [ -x $ROOTFS/bin/bash ]; then
-  chroot $ROOTFS /bin/bash --login
-else
-  chroot $ROOTFS /bin/sh
-fi
-
-echo " "
-echo "================================"
-echo "  Cleaning up..."
-echo "================================"
-echo " "
-
-umount -l $ROOTFS/external_sd 2>/dev/null
-umount -l $ROOTFS/sdcard 2>/dev/null
-umount -l $ROOTFS/dev/binderfs 2>/dev/null
-umount -l $ROOTFS/sys/fs/cgroup/devices 2>/dev/null
-umount -l $ROOTFS/sys/fs/cgroup 2>/dev/null
-umount -l $ROOTFS/dev/pts 2>/dev/null
-umount -l $ROOTFS/dev 2>/dev/null
-umount -l $ROOTFS/sys 2>/dev/null
-umount -l $ROOTFS/proc 2>/dev/null
-umount -l $ROOTFS 2>/dev/null
-
-echo "✓ Done"
-BOOTSCRIPT
-
+        cat > installer/system/rootfs/boot-chroot.sh << 'EOF'
+        #!/system/bin/sh
+        
+        ROOTFS="$(cd "$(dirname "$0")" && pwd)"
+        
+        echo "Starting: $(basename $ROOTFS)"
+        
+        is_mounted() { mount | grep -q " $1 "; }
+        
+        mount_it() {
+          is_mounted "$2" && return
+          mount $1 "$2" 2>/dev/null && echo "Mounted: $(basename $2)"
+        }
+        
+        mount -o bind $ROOTFS $ROOTFS 2>/dev/null
+        mount -o remount,dev,suid /data 2>/dev/null
+        
+        mount_it "--bind /dev" "$ROOTFS/dev"
+        mount_it "--bind /sys" "$ROOTFS/sys"
+        mount_it "--bind /proc" "$ROOTFS/proc"
+        mount_it "-t devpts devpts" "$ROOTFS/dev/pts"
+        
+        mkdir -p $ROOTFS/sys/fs/cgroup/devices
+        mount_it "-t tmpfs -o mode=755 tmpfs" "$ROOTFS/sys/fs/cgroup"
+        mount_it "-t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
+        
+        if [ -d /dev/binderfs ]; then
+          mkdir -p $ROOTFS/dev/binderfs
+          mount_it "--bind /dev/binderfs" "$ROOTFS/dev/binderfs"
+        fi
+        
+        mkdir -p $ROOTFS/sdcard
+        mount_it "--bind /sdcard" "$ROOTFS/sdcard"
+        
+        for d in /storage/*; do
+          b=$(basename "$d")
+          if [ "$b" != "emulated" ] && [ "$b" != "self" ] && [ -d "$d" ]; then
+            mkdir -p $ROOTFS/external_sd
+            mount_it "--bind $d" "$ROOTFS/external_sd"
+            break
+          fi
+        done
+        
+        cat > $ROOTFS/etc/resolv.conf << DNSEOF
+        nameserver 8.8.8.8
+        nameserver 1.1.1.1
+        DNSEOF
+        
+        echo "Entering chroot..."
+        
+        if [ -x $ROOTFS/bin/bash ]; then
+          chroot $ROOTFS /bin/bash --login
+        else
+          chroot $ROOTFS /bin/sh
+        fi
+        
+        echo "Cleaning up..."
+        
+        umount -l $ROOTFS/external_sd 2>/dev/null
+        umount -l $ROOTFS/sdcard 2>/dev/null
+        umount -l $ROOTFS/dev/binderfs 2>/dev/null
+        umount -l $ROOTFS/sys/fs/cgroup/devices 2>/dev/null
+        umount -l $ROOTFS/sys/fs/cgroup 2>/dev/null
+        umount -l $ROOTFS/dev/pts 2>/dev/null
+        umount -l $ROOTFS/dev 2>/dev/null
+        umount -l $ROOTFS/sys 2>/dev/null
+        umount -l $ROOTFS/proc 2>/dev/null
+        umount -l $ROOTFS 2>/dev/null
+        
+        echo "Done"
+        EOF
+        
         chmod 755 installer/system/rootfs/boot-chroot.sh
         
-        cat > installer/system/rootfs/auto-boot.sh << 'AUTOBOOTSCRIPT'
-#!/system/bin/sh
-
-ROOTFS="$(cd "$(dirname "$0")" && pwd)"
-LOCK="$ROOTFS/.boot.lock"
-
-[ -f "$LOCK" ] && exit 0
-echo $$ > $LOCK
-
-trap "rm -f $LOCK" EXIT INT TERM
-
-is_mounted() { mount | grep -q " $1 "; }
-
-mount_safe() {
-  is_mounted "$2" && return 0
-  $1 "$2" 2>/dev/null
-}
-
-mount_safe "mount -o bind $ROOTFS" "$ROOTFS"
-mount -o remount,dev,suid /data 2>/dev/null
-
-mount_safe "mount --bind /dev" "$ROOTFS/dev"
-mount_safe "mount --bind /sys" "$ROOTFS/sys"
-mount_safe "mount --bind /proc" "$ROOTFS/proc"
-mount_safe "mount -t devpts devpts" "$ROOTFS/dev/pts"
-
-mkdir -p $ROOTFS/sys/fs/cgroup/devices
-mount_safe "mount -t tmpfs -o mode=755 tmpfs" "$ROOTFS/sys/fs/cgroup"
-mount_safe "mount -t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
-
-if [ -d /dev/binderfs ]; then
-  mkdir -p $ROOTFS/dev/binderfs
-  mount_safe "mount --bind /dev/binderfs" "$ROOTFS/dev/binderfs"
-fi
-
-mkdir -p $ROOTFS/sdcard
-mount_safe "mount --bind /sdcard" "$ROOTFS/sdcard"
-
-for d in /storage/*; do
-  b=$(basename "$d")
-  if [ "$b" != "emulated" ] && [ "$b" != "self" ] && [ -d "$d" ]; then
-    mkdir -p $ROOTFS/external_sd
-    mount_safe "mount --bind $d" "$ROOTFS/external_sd"
-    break
-  fi
-done
-
-cat > $ROOTFS/etc/resolv.conf << DNSEOF
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-DNSEOF
-
-exit 0
-AUTOBOOTSCRIPT
-
+        cat > installer/system/rootfs/auto-boot.sh << 'EOF'
+        #!/system/bin/sh
+        
+        ROOTFS="$(cd "$(dirname "$0")" && pwd)"
+        LOCK="$ROOTFS/.boot.lock"
+        
+        [ -f "$LOCK" ] && exit 0
+        echo $$ > $LOCK
+        
+        trap "rm -f $LOCK" EXIT INT TERM
+        
+        is_mounted() { mount | grep -q " $1 "; }
+        
+        mount_safe() {
+          is_mounted "$2" && return 0
+          $1 "$2" 2>/dev/null
+        }
+        
+        mount_safe "mount -o bind $ROOTFS" "$ROOTFS"
+        mount -o remount,dev,suid /data 2>/dev/null
+        
+        mount_safe "mount --bind /dev" "$ROOTFS/dev"
+        mount_safe "mount --bind /sys" "$ROOTFS/sys"
+        mount_safe "mount --bind /proc" "$ROOTFS/proc"
+        mount_safe "mount -t devpts devpts" "$ROOTFS/dev/pts"
+        
+        mkdir -p $ROOTFS/sys/fs/cgroup/devices
+        mount_safe "mount -t tmpfs -o mode=755 tmpfs" "$ROOTFS/sys/fs/cgroup"
+        mount_safe "mount -t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
+        
+        if [ -d /dev/binderfs ]; then
+          mkdir -p $ROOTFS/dev/binderfs
+          mount_safe "mount --bind /dev/binderfs" "$ROOTFS/dev/binderfs"
+        fi
+        
+        mkdir -p $ROOTFS/sdcard
+        mount_safe "mount --bind /sdcard" "$ROOTFS/sdcard"
+        
+        for d in /storage/*; do
+          b=$(basename "$d")
+          if [ "$b" != "emulated" ] && [ "$b" != "self" ] && [ -d "$d" ]; then
+            mkdir -p $ROOTFS/external_sd
+            mount_safe "mount --bind $d" "$ROOTFS/external_sd"
+            break
+          fi
+        done
+        
+        cat > $ROOTFS/etc/resolv.conf << DNSEOF
+        nameserver 8.8.8.8
+        nameserver 1.1.1.1
+        DNSEOF
+        
+        exit 0
+        EOF
+        
         chmod 755 installer/system/rootfs/auto-boot.sh
     
     - name: Download Busybox
@@ -673,7 +544,7 @@ AUTOBOOTSCRIPT
         cd installer
         
         if [ "${{ inputs.include_magisk }}" = "true" ]; then
-          ZIP_NAME="twrp-rootfs-${{ inputs.distro_name }}-${{ inputs.arch }}-with-magisk.zip"
+          ZIP_NAME="twrp-rootfs-${{ inputs.distro_name }}-${{ inputs.arch }}-magisk.zip"
         else
           ZIP_NAME="twrp-rootfs-${{ inputs.distro_name }}-${{ inputs.arch }}.zip"
         fi
@@ -684,52 +555,8 @@ AUTOBOOTSCRIPT
         sha256sum "$ZIP_NAME" > "$ZIP_NAME.sha256"
         md5sum "$ZIP_NAME" > "$ZIP_NAME.md5"
         
-        echo " "
-        echo "Package created successfully!"
-        echo "================================"
+        echo "Package created"
         ls -lh "$ZIP_NAME"
-        echo " "
-        echo "SHA256:"
-        cat "$ZIP_NAME.sha256"
-    
-    - name: Create Release Notes
-      run: |
-        cat > RELEASE_NOTES.md << 'RELEASEEOF'
-# TWRP RootFS Installer with Magisk
-
-## Build Information
-- Distribution: ${{ inputs.distro_name }}
-- Architecture: ${{ inputs.arch }}
-- Magisk Included: ${{ inputs.include_magisk }}
-- Build Date: $(date -u)
-
-## Features
-- Auto-detect root status
-- Auto-install Magisk if needed
-- Auto-boot on startup (if rooted)
-- Interactive launcher
-- Binderfs support
-- Works without root (limited)
-
-## Installation
-1. Download ZIP file
-2. Boot to TWRP
-3. Install ZIP
-4. Reboot
-
-## Usage
-```bash
-su
-/data/local/rootfs/launch.sh
-```
-
-## Uninstall
-```bash
-su
-rm -rf /data/local/rootfs
-rm -f /data/adb/service.d/rootfs-boot.sh
-```
-RELEASEEOF
     
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -739,11 +566,10 @@ RELEASEEOF
           twrp-rootfs-*.zip
           twrp-rootfs-*.sha256
           twrp-rootfs-*.md5
-          RELEASE_NOTES.md
         retention-days: 30
         compression-level: 0
     
-    - name: Create GitHub Release
+    - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
@@ -751,8 +577,5 @@ RELEASEEOF
           twrp-rootfs-*.zip
           twrp-rootfs-*.sha256
           twrp-rootfs-*.md5
-        body_path: RELEASE_NOTES.md
-        draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
