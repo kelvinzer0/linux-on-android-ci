@@ -109,8 +109,8 @@ jobs:
         EXTRACT_DIR="rootfs_temp"
         mkdir -p "$EXTRACT_DIR"
         
-        echo "Extracting archive..."
-        if tar -xpf "original-$FILENAME" -C "$EXTRACT_DIR" 2>&1 | head -20; then
+        echo "Extracting archive (device node warnings are normal)..."
+        if tar -xpf "original-$FILENAME" -C "$EXTRACT_DIR" 2>&1 | grep -v "Cannot mknod" | head -20; then
           echo "✓ Extraction successful"
         else
           echo "✗ Extraction failed!"
@@ -124,11 +124,11 @@ jobs:
         ROOTFS_ROOT="$EXTRACT_DIR"
         
         # Find actual rootfs root (might be nested)
-        if [ -d "$EXTRACT_DIR"/*/ ]; then
-          FIRST_DIR=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+        FIRST_DIR=$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)
+        if [ -n "$FIRST_DIR" ]; then
           if [ -d "$FIRST_DIR/bin" ] || [ -d "$FIRST_DIR/usr" ]; then
             ROOTFS_ROOT="$FIRST_DIR"
-            echo "Found nested rootfs at: $(basename $FIRST_DIR)"
+            echo "Found nested rootfs at: $(basename "$FIRST_DIR")"
           fi
         fi
         
@@ -176,9 +176,14 @@ jobs:
         
         # Repack with optimal compression
         echo "Creating standardized tar.xz archive..."
+        echo "(This may take several minutes depending on rootfs size)"
         
         cd "$ROOTFS_ROOT"
-        tar -cpf - . | xz -9e -T0 > ../rootfs.tar.xz
+        
+        # Use level 6 compression for better memory usage on CI
+        # Level 9 uses too much memory on GitHub runners
+        tar -cpf - . | xz -6e -T0 > ../rootfs.tar.xz
+        
         cd ..
         
         if [ ! -f "rootfs.tar.xz" ]; then
@@ -187,6 +192,7 @@ jobs:
         fi
         
         REPACKED_SIZE=$(stat -c%s rootfs.tar.xz)
+        COMPRESSION_RATIO=$(echo "scale=1; $REPACKED_SIZE * 100 / $ORIGINAL_SIZE" | bc)
         
         echo "✓ Repacking complete"
         echo ""
@@ -199,8 +205,9 @@ jobs:
         echo ""
         echo "Repacked archive:"
         echo "  Size: $(numfmt --to=iec-i --suffix=B $REPACKED_SIZE)"
-        echo "  Format: tar.xz (XZ level 9)"
-        echo "  Compression: $(echo "scale=1; ($ORIGINAL_SIZE - $REPACKED_SIZE) * 100 / $ORIGINAL_SIZE" | bc)% saved"
+        echo "  Format: tar.xz (XZ level 6e)"
+        echo "  Size ratio: ${COMPRESSION_RATIO}% of original"
+        echo "  Contents: $TOTAL_FILES files, $TOTAL_DIRS directories"
         echo ""
         
         # Verify repacked archive
@@ -548,74 +555,149 @@ jobs:
       run: |
         cat > installer/system/rootfs/boot-chroot.sh << 'EOF'
         #!/system/bin/sh
+        # Boot Chroot - Portable version
         
         ROOTFS="$(cd "$(dirname "$0")" && pwd)"
         
-        echo "Starting: $(basename $ROOTFS)"
+        # Get rootfs name without basename
+        ROOTFS_NAME="${ROOTFS%/}"
+        ROOTFS_NAME="${ROOTFS_NAME##*/}"
         
-        is_mounted() { mount | grep -q " $1 "; }
+        echo " "
+        echo "================================"
+        echo "  Starting: $ROOTFS_NAME"
+        echo "================================"
+        echo " "
         
-        mount_it() {
-          is_mounted "$2" && return
-          mount $1 "$2" 2>/dev/null && echo "Mounted: $(basename $2)"
+        # Check if mounted
+        is_mounted() {
+          if [ -f /proc/mounts ]; then
+            grep -q " $1 " /proc/mounts 2>/dev/null
+          else
+            mount 2>/dev/null | grep -q " $1 "
+          fi
         }
         
+        # Mount helper
+        mount_it() {
+          TARGET="$2"
+          
+          if is_mounted "$TARGET"; then
+            echo "  [SKIP] $TARGET (already mounted)"
+            return 0
+          fi
+          
+          if mount $1 "$TARGET" 2>/dev/null; then
+            echo "  [OK] $TARGET"
+            return 0
+          else
+            echo "  [FAIL] $TARGET"
+            return 1
+          fi
+        }
+        
+        echo "Setting up environment..."
+        echo " "
+        
+        # Self-bind
         mount -o bind $ROOTFS $ROOTFS 2>/dev/null
+        
+        # Fix /data mount options
         mount -o remount,dev,suid /data 2>/dev/null
         
+        # Essential mounts
         mount_it "--bind /dev" "$ROOTFS/dev"
         mount_it "--bind /sys" "$ROOTFS/sys"
         mount_it "--bind /proc" "$ROOTFS/proc"
         mount_it "-t devpts devpts" "$ROOTFS/dev/pts"
         
-        mkdir -p $ROOTFS/sys/fs/cgroup/devices
+        # Cgroups
+        if [ ! -d "$ROOTFS/sys/fs/cgroup" ]; then
+          mkdir -p "$ROOTFS/sys/fs/cgroup/devices"
+        fi
         mount_it "-t tmpfs -o mode=755 tmpfs" "$ROOTFS/sys/fs/cgroup"
         mount_it "-t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
         
+        # Binderfs (Android 11+)
         if [ -d /dev/binderfs ]; then
-          mkdir -p $ROOTFS/dev/binderfs
+          mkdir -p "$ROOTFS/dev/binderfs"
           mount_it "--bind /dev/binderfs" "$ROOTFS/dev/binderfs"
         fi
         
-        mkdir -p $ROOTFS/sdcard
-        mount_it "--bind /sdcard" "$ROOTFS/sdcard"
+        # SDCard
+        if [ -d /sdcard ]; then
+          mkdir -p "$ROOTFS/sdcard"
+          mount_it "--bind /sdcard" "$ROOTFS/sdcard"
+        fi
         
+        # External SD
         for d in /storage/*; do
-          b=$(basename "$d")
+          # Get basename without using basename command
+          b="${d##*/}"
           if [ "$b" != "emulated" ] && [ "$b" != "self" ] && [ -d "$d" ]; then
-            mkdir -p $ROOTFS/external_sd
-            mount_it "--bind $d" "$ROOTFS/external_sd"
-            break
+            mkdir -p "$ROOTFS/external_sd"
+            if mount_it "--bind $d" "$ROOTFS/external_sd"; then
+              break
+            fi
           fi
         done
         
+        # Setup DNS
         cat > $ROOTFS/etc/resolv.conf << DNSEOF
         nameserver 8.8.8.8
+        nameserver 8.8.4.4
         nameserver 1.1.1.1
         DNSEOF
         
-        echo "Entering chroot..."
+        echo " "
+        echo "================================"
+        echo "  Entering chroot..."
+        echo "================================"
+        echo " "
         
-        if [ -x $ROOTFS/bin/bash ]; then
-          chroot $ROOTFS /bin/bash --login
+        # Find available shell
+        if [ -x "$ROOTFS/bin/bash" ]; then
+          SHELL_CMD="/bin/bash"
+        elif [ -x "$ROOTFS/bin/sh" ]; then
+          SHELL_CMD="/bin/sh"
+        elif [ -x "$ROOTFS/system/bin/sh" ]; then
+          SHELL_CMD="/system/bin/sh"
         else
-          chroot $ROOTFS /bin/sh
+          echo "ERROR: No shell found in rootfs!"
+          echo " "
+          exit 1
         fi
         
-        echo "Cleaning up..."
+        # Enter chroot
+        chroot $ROOTFS $SHELL_CMD --login 2>/dev/null || chroot $ROOTFS $SHELL_CMD
         
-        umount -l $ROOTFS/external_sd 2>/dev/null
-        umount -l $ROOTFS/sdcard 2>/dev/null
-        umount -l $ROOTFS/dev/binderfs 2>/dev/null
-        umount -l $ROOTFS/sys/fs/cgroup/devices 2>/dev/null
-        umount -l $ROOTFS/sys/fs/cgroup 2>/dev/null
-        umount -l $ROOTFS/dev/pts 2>/dev/null
-        umount -l $ROOTFS/dev 2>/dev/null
-        umount -l $ROOTFS/sys 2>/dev/null
-        umount -l $ROOTFS/proc 2>/dev/null
+        CHROOT_EXIT=$?
+        
+        echo " "
+        echo "================================"
+        echo "  Exited chroot (code: $CHROOT_EXIT)"
+        echo "================================"
+        echo " "
+        echo "Cleaning up mounts..."
+        
+        # Unmount in reverse order
+        for mnt in external_sd sdcard dev/binderfs sys/fs/cgroup/devices sys/fs/cgroup dev/pts dev sys proc; do
+          TARGET="$ROOTFS/$mnt"
+          if is_mounted "$TARGET"; then
+            if umount -l "$TARGET" 2>/dev/null; then
+              echo "  [OK] Unmounted $mnt"
+            else
+              echo "  [WARN] Failed to unmount $mnt"
+            fi
+          fi
+        done
+        
+        # Unmount self-bind
         umount -l $ROOTFS 2>/dev/null
         
-        echo "Done"
+        echo " "
+        echo "Done!"
+        echo " "
         EOF
         
         chmod 755 installer/system/rootfs/boot-chroot.sh
