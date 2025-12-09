@@ -257,6 +257,109 @@ jobs:
           
           # Create boot script
           ui_print "  Creating boot script..."
+          cat > "$DEST/fix-network.sh" << 'FIXNETWORK'
+        #!/bin/sh
+        # Universal script untuk fix network access dengan Android kernel groups
+        # Auto detect user yang perlu akses internet per distro
+
+        /etc/profile
+        
+        cp /etc/group /etc/group.bak 2>/dev/null
+        cp /etc/passwd /etc/passwd.bak 2>/dev/null
+        
+        # ============================================
+        # ANDROID GROUPS
+        # ============================================
+        cat >> /etc/group << 'EOF'
+        aid_inet:x:3003:root
+        aid_net_raw:x:3004:
+        aid_graphics:x:1003:
+        EOF
+        
+        echo "Android groups added!"
+        
+        # ============================================
+        # AUTO DETECT & FIX NETWORK USERS
+        # ============================================
+        
+        NETWORK_USERS=""
+        
+        # Debian/Ubuntu/Kali - user _apt
+        if grep -q "^_apt:" /etc/passwd; then
+            NETWORK_USERS="$NETWORK_USERS _apt"
+            echo "Detected: Debian/Ubuntu (user: _apt)"
+        fi
+        
+        # Alpine - user nobody atau apk
+        if [ -f /etc/alpine-release ]; then
+            if grep -q "^nobody:" /etc/passwd; then
+                NETWORK_USERS="$NETWORK_USERS nobody"
+            fi
+            echo "Detected: Alpine Linux"
+        fi
+        
+        # Arch - user alpm (pacman)
+        if grep -q "^alpm:" /etc/passwd; then
+            NETWORK_USERS="$NETWORK_USERS alpm"
+            echo "Detected: Arch Linux (user: alpm)"
+        fi
+        
+        # OpenWrt - user network
+        if grep -q "^network:" /etc/passwd; then
+            NETWORK_USERS="$NETWORK_USERS network"
+            echo "Detected: OpenWrt (user: network)"
+        fi
+        
+        # Fedora/RHEL - user nobody atau systemd users
+        if [ -f /etc/redhat-release ]; then
+            if grep -q "^nobody:" /etc/passwd; then
+                NETWORK_USERS="$NETWORK_USERS nobody"
+            fi
+            echo "Detected: Fedora/RHEL"
+        fi
+        
+        # ============================================
+        # APPLY FIX
+        # ============================================
+        
+        if [ -n "$NETWORK_USERS" ]; then
+            echo "Adding users to aid_inet and aid_net_raw groups..."
+            
+            for user in $NETWORK_USERS; do
+                # Tambahkan ke aid_inet
+                if ! grep "^aid_inet:.*$user" /etc/group > /dev/null; then
+                    sed -i "s/^\(aid_inet:x:3003:.*\)$/\1,$user/" /etc/group
+                    sed -i "s/^\(aid_inet:x:3003:\)$/\1$user/" /etc/group
+                fi
+                
+                # Tambahkan ke aid_net_raw
+                if ! grep "^aid_net_raw:.*$user" /etc/group > /dev/null; then
+                    sed -i "s/^\(aid_net_raw:x:3004:.*\)$/\1,$user/" /etc/group
+                    sed -i "s/^\(aid_net_raw:x:3004:\)$/\1$user/" /etc/group
+                fi
+                
+                # Ubah primary group ke 3003 (aid_inet) - khusus untuk _apt
+                if [ "$user" = "_apt" ]; then
+                    sed -i "s/^\(_apt:x:[0-9]*:\)[0-9]*/\13003/" /etc/passwd
+                fi
+                
+                echo "  - User '$user' added to internet groups"
+            done
+        else
+            echo "No package manager user detected, only root will have internet access"
+        fi
+        
+        # ============================================
+        # VERIFICATION
+        # ============================================
+        echo ""
+        echo "=== Verification ==="
+        grep "^aid_" /etc/group
+        echo ""
+        echo "Setup complete! Backup: /etc/group.bak"
+          FIXNETWORK
+
+          chmod +x "$DEST/fix-network.sh"
           
           cat > "$DEST/boot-chroot.sh" << 'BOOTSCRIPT'
         #!/system/bin/sh
@@ -392,9 +495,9 @@ jobs:
         echo "[*] Entering chroot..."
 
         if [ -x "$ROOTFS/bin/bash" ]; then
-            busybox chroot "$ROOTFS" /bin/bash -c "source /etc/profile 2>/dev/null; exec bash --login"
+            busybox chroot "$ROOTFS" /bin/bash -c "source /fix-network.sh 2>/dev/null; exec bash --login"
         else
-            busybox chroot "$ROOTFS" /bin/sh -c ". /etc/profile 2>/dev/null; exec /bin/sh"
+            busybox chroot "$ROOTFS" /bin/sh -c ". /fix-network.sh 2>/dev/null; exec /bin/sh"
         fi
 
         
