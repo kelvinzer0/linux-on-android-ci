@@ -341,6 +341,8 @@ jobs:
         mount_safe "busybox mount --bind /sys" "$ROOTFS/sys"
         mount_safe "busybox mount --bind /proc" "$ROOTFS/proc"
         mount_safe "busybox mount -t devpts devpts" "$ROOTFS/dev/pts"
+
+        mount_safe "busybox mount -t tmpfs -o size=256M tmpfs $ROOTFS/dev/shm"
         
         # Cgroups
         if ! is_mounted "$ROOTFS/sys/fs/cgroup"; then
@@ -381,14 +383,6 @@ jobs:
           done
         fi
         
-        # DNS
-        check_ownership "$ROOTFS/etc"
-        ensure_dir "$ROOTFS/etc"
-        cat > $ROOTFS/etc/resolv.conf << DNSEOF
-        nameserver 8.8.8.8
-        nameserver 1.1.1.1
-        DNSEOF
-        
         # Enter chroot
         echo "[*] Entering chroot..."
 
@@ -411,6 +405,7 @@ jobs:
         busybox umount $ROOTFS/sys 2>/dev/null
         busybox umount $ROOTFS/proc 2>/dev/null
         busybox umount $ROOTFS/sdcard 2>/dev/null
+        busybox umount $ROOTFS/dev/shm
         
         [ "$MOUNTED_EXTERNAL_SD" = "1" ] && busybox umount $ROOTFS/external_sd 2>/dev/null
         
