@@ -3,6 +3,11 @@
 # Fixes network access for Linux chroot on Android kernel with CONFIG_ANDROID_PARANOID_NETWORK
 # Compatible: Debian, Ubuntu, Kali, Arch, Alpine, OpenWrt, and all Linux distros
 
+echo "WIB-7" > /tmp/TZ
+cp /usr/share/zoneinfo/Asia/Jakarta /tmp/localtime
+echo "nameserver 8.8.8.8" > /tmp/resolv.conf
+echo "nameserver 1.1.1.1" >> /tmp/resolv.conf
+
 # Backup
 cp /etc/group /etc/group.bak 2>/dev/null
 cp /etc/passwd /etc/passwd.bak 2>/dev/null
