@@ -84,7 +84,7 @@ jobs:
         fi
 
         # Patch network
-        cp scipts/fix-network.sh "$ROOTFS_ROOT/"
+        cp $GITHUB_WORKSPACE/scripts/fix-network.sh "$ROOTFS_ROOT/" 
         chmod 755 "$ROOTFS_ROOT/fix-network.sh"
         
         # Count contents
