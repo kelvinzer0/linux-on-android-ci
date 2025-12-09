@@ -283,7 +283,7 @@ jobs:
         fi
         
         # Create lock file
-        echo $ > "$LOCK_FILE"
+        echo $$ > "$LOCK_FILE"
         
         # Cleanup lock on exit
         trap "rm -f $LOCK_FILE" EXIT INT TERM
@@ -331,7 +331,7 @@ jobs:
         }
         
         # Self-bind
-        mount_safe "busybox mount -o bind $ROOTFS" "$ROOTFS"
+        # mount_safe "busybox mount -o bind $ROOTFS" "$ROOTFS"
         
         # Fix setuid on /data
         busybox mount -o remount,dev,suid /data 2>/dev/null
@@ -391,18 +391,13 @@ jobs:
         
         # Enter chroot
         echo "[*] Entering chroot..."
-        echo "[*] Type 'exit' to leave chroot"
-        echo " "
-        
-        if [ -e "$ROOTFS/bin/bash" ]; then
-          busybox chroot $ROOTFS /bin/bash --login
-        elif [ -e "$ROOTFS/bin/sudo" ]; then
-          busybox chroot $ROOTFS /bin/sudo su
-        elif [ -e "$ROOTFS/bin/su" ]; then
-          busybox chroot $ROOTFS /bin/su -
+
+        if [ -x "$ROOTFS/bin/bash" ]; then
+            busybox chroot "$ROOTFS" /bin/bash -c "source /etc/profile 2>/dev/null; exec bash --login"
         else
-          busybox chroot $ROOTFS /bin/sh
+            busybox chroot "$ROOTFS" /bin/sh -c ". /etc/profile 2>/dev/null; exec /bin/sh"
         fi
+
         
         # Cleanup
         echo " "
