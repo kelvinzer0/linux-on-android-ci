@@ -332,6 +332,11 @@ jobs:
         
         # Self-bind
         # mount_safe "busybox mount -o bind $ROOTFS" "$ROOTFS"
+        export PATH=/sbin:/usr/bin:/usr/sbin:/system/bin:/system/xbin:$PATH
+        export USER=root
+        export HOME=/root
+        export LANGUAGE=C
+        export LANG=C
         
         # Fix setuid on /data
         busybox mount -o remount,dev,suid /data 2>/dev/null
