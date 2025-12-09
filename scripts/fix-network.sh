@@ -6,7 +6,7 @@
 echo "WIB-7" > /tmp/TZ
 cp /usr/share/zoneinfo/Asia/Jakarta /tmp/localtime
 echo "nameserver 8.8.8.8" > /tmp/resolv.conf
-echo "nameserver 1.1.1.1" >> /tmp/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
 # Backup
 cp /etc/group /etc/group.bak 2>/dev/null
