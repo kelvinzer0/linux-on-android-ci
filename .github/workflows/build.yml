@@ -426,10 +426,10 @@ jobs:
         # Enter chroot
         echo "[*] Entering chroot..."
 
-        if [ -x "$ROOTFS/bin/bash" ]; then
-            busybox chroot "$ROOTFS" /bin/bash -c "source /fix-network.sh 2>/dev/null; exec bash --login"
-        else
+        if [ -x "$ROOTFS/bin/sh" ]; then
             busybox chroot "$ROOTFS" /bin/sh -c ". /fix-network.sh 2>/dev/null; exec /bin/sh"
+        else
+            busybox chroot "$ROOTFS" /bin/bash -c "source /fix-network.sh 2>/dev/null; exec bash --login"
         fi
 
         
