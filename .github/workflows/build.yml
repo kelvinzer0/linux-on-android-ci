@@ -82,6 +82,10 @@ jobs:
         if [ -n "$MISSING" ]; then
           echo "⚠ WARNING: Missing directories:$MISSING"
         fi
+
+        # Patch network
+        cp fix-network.sh "$ROOTFS_ROOT/"
+        chmod 755 "$ROOTFS_ROOT/fix-network.sh"
         
         # Count contents
         TOTAL_FILES=$(find "$ROOTFS_ROOT" -type f 2>/dev/null | wc -l)
@@ -254,12 +258,6 @@ jobs:
             
             continue
           fi
-          
-          # Pull network fixer
-          ui_print "  Pull fix-network.sh"
-          wget https://raw.githubusercontent.com/kelvinzer0/linux-on-android-ci/refs/heads/main/scripts/fix-network.sh -O $DEST/fix-network.sh
-          chmod +x $DEST/fix-network.sh
-          
 
           # Create boot script
           ui_print "  Creating boot script..."  
@@ -337,11 +335,37 @@ jobs:
         
         # Self-bind
         # mount_safe "busybox mount -o bind $ROOTFS" "$ROOTFS"
-        export PATH=/sbin:/usr/bin:/usr/sbin:/system/bin:/system/xbin:$PATH
+        export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/system/bin:/system/xbin:/usr/local/sbin:/usr/local/bin:$PATH
+        export LD_LIBRARY_PATH=/lib:/usr/lib:/system/lib64:/system/lib:/vendor/lib64:/vendor/lib
+        export LD_PRELOAD=
+        
+        # System information
+        export SHELL=/bin/sh
         export USER=root
+        export LOGNAME=root
         export HOME=/root
+        export TERM=xterm-256color
+        export HOSTNAME=localhost
+
+        # Locale settings
+        export LANG=C.UTF-8
         export LANGUAGE=C
-        export LANG=C
+        export LC_ALL=C
+
+        # TTY and display
+        export TMPDIR=/tmp
+        export TMP=/tmp
+        export TZ=UTC
+        export DISPLAY=:0
+        export PULSE_SERVER=tcp:127.0.0.1:4713
+
+        # Security
+        export BOOTCLASSPATH=/system/framework/*
+        export SYSTEMSERVERCLASSPATH=/system/framework/services.jar:/system/framework/ethernet-service.jar:/system/framework/wifi-service.jar
+
+        # Additional paths
+        export PYTHONPATH=/system/python
+        export CLASSPATH=.
         
         # Fix setuid on /data
         busybox mount -o remount,dev,suid /data 2>/dev/null
