@@ -84,7 +84,7 @@ jobs:
         fi
 
         # Patch network
-        cp fix-network.sh "$ROOTFS_ROOT/"
+        cp scipts/fix-network.sh "$ROOTFS_ROOT/"
         chmod 755 "$ROOTFS_ROOT/fix-network.sh"
         
         # Count contents
@@ -338,7 +338,7 @@ jobs:
         export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/system/bin:/system/xbin:/usr/local/sbin:/usr/local/bin:$PATH
         export LD_LIBRARY_PATH=/lib:/usr/lib:/system/lib64:/system/lib:/vendor/lib64:/vendor/lib
         export LD_PRELOAD=
-        
+
         # System information
         export SHELL=/bin/sh
         export USER=root
