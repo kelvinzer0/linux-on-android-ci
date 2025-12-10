@@ -208,7 +208,7 @@ jobs:
         for archive in rootfs/*.tar.*; do
           [ -f "$archive" ] || continue
           
-          NAME="${{ inputs.rootfs_url }}"
+          NAME="${{ inputs.distro_name }}"
           DEST="$ROOTFS_BASE/$NAME"
           
           ui_print "→ $NAME"
