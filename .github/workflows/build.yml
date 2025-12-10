@@ -208,8 +208,7 @@ jobs:
         for archive in rootfs/*.tar.*; do
           [ -f "$archive" ] || continue
           
-          NAME=$(basename "$archive")
-          NAME="${NAME%.tar.*}"
+          NAME="${{ inputs.rootfs_url }}"
           DEST="$ROOTFS_BASE/$NAME"
           
           ui_print "→ $NAME"
@@ -271,6 +270,9 @@ jobs:
         #!/system/bin/sh
         
         ROOTFS="ROOTFS_PLACEHOLDER"
+        ROOTFS_NAME=$(basename "$ROOTFS")
+        OVERLAY_BASE="/data/local/overlay/$ROOTFS_NAME"
+        OVERLAY_MERGED="$OVERLAY_BASE/merged"
         LOCK_FILE="$ROOTFS/.chroot.lock"
         
         if [ ! -d "$ROOTFS" ]; then
@@ -341,6 +343,33 @@ jobs:
         
         # Self-bind
         # mount_safe "busybox mount -o bind $ROOTFS" "$ROOTFS"
+
+        echo "[*] Setting up overlay filesystem..."
+
+        # Pastikan direktori overlay ada
+        ensure_dir "$OVERLAY_BASE/upper"
+        ensure_dir "$OVERLAY_BASE/work"
+        ensure_dir "$OVERLAY_MERGED"
+
+        # Mount overlay (jika belum)
+        if ! is_mounted "$OVERLAY_MERGED"; then
+            if busybox mount -t overlay overlay \
+                -o lowerdir="$ROOTFS",upperdir="$OVERLAY_BASE/upper",workdir="$OVERLAY_BASE/work" \
+                "$OVERLAY_MERGED"; then
+                echo "[+] Overlay mounted successfully"
+                USE_OVERLAY=1
+                CHROOT_TARGET="$OVERLAY_MERGED"
+            else
+                echo "[!] Overlay mount failed, using direct rootfs"
+                CHROOT_TARGET="$ROOTFS"
+            fi
+        else
+            echo "[~] Overlay already mounted"
+            USE_OVERLAY=1
+            CHROOT_TARGET="$OVERLAY_MERGED"
+        fi
+
+        echo "[*] Setting up mounts for chroot..."
         export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/system/bin:/system/xbin:/usr/local/sbin:/usr/local/bin:$PATH
         export LD_LIBRARY_PATH=/lib:/usr/lib:/system/lib64:/system/lib:/vendor/lib64:/vendor/lib
         export LD_PRELOAD=
@@ -377,44 +406,43 @@ jobs:
         busybox mount -o remount,dev,suid /data 2>/dev/null
         
         # Essential mounts
-        mount_safe "busybox mount --bind /dev" "$ROOTFS/dev"
-        mount_safe "busybox mount --bind /sys" "$ROOTFS/sys"
-        mount_safe "busybox mount --bind /proc" "$ROOTFS/proc"
-        mount_safe "busybox mount -t devpts devpts" "$ROOTFS/dev/pts"
-
-        mount_safe "busybox mount -t tmpfs -o size=256M tmpfs $ROOTFS/dev/shm"
+        mount_safe "busybox mount --bind /dev" "$CHROOT_TARGET/dev"
+        mount_safe "busybox mount --bind /sys" "$CHROOT_TARGET/sys"
+        mount_safe "busybox mount --bind /proc" "$CHROOT_TARGET/proc"
+        mount_safe "busybox mount -t devpts devpts" "$CHROOT_TARGET/dev/pts"
+        mount_safe "busybox mount -t tmpfs -o size=256M tmpfs" "$CHROOT_TARGET/dev/shm"
         
         # Cgroups
-        if ! is_mounted "$ROOTFS/sys/fs/cgroup"; then
-          busybox mount -t tmpfs -o mode=755 tmpfs $ROOTFS/sys/fs/cgroup 2>/dev/null
-          mkdir -p $ROOTFS/sys/fs/cgroup/devices
-          mount_safe "busybox mount -t cgroup -o devices cgroup" "$ROOTFS/sys/fs/cgroup/devices"
+        if ! is_mounted "$CHROOT_TARGET/sys/fs/cgroup"; then
+          busybox mount -t tmpfs -o mode=755 tmpfs $CHROOT_TARGET/sys/fs/cgroup 2>/dev/null
+          mkdir -p $CHROOT_TARGET/sys/fs/cgroup/devices
+          mount_safe "busybox mount -t cgroup -o devices cgroup" "$CHROOT_TARGET/sys/fs/cgroup/devices"
         fi
         
         # Binderfs (Android 11+)
         if [ -d /dev/binderfs ]; then
-          if ! is_mounted "$ROOTFS/dev/binderfs"; then
+          if ! is_mounted "$CHROOT_TARGET/dev/binderfs"; then
             echo "[*] Binderfs detected, mounting..."
-            mkdir -p $ROOTFS/dev/binderfs
-            mount_safe "busybox mount -o bind /dev/binderfs" "$ROOTFS/dev/binderfs"
+            mkdir -p $CHROOT_TARGET/dev/binderfs
+            mount_safe "busybox mount -o bind /dev/binderfs" "$CHROOT_TARGET/dev/binderfs"
           fi
         fi
         
         # SDCard
         if [ -d /sdcard ]; then
-          mkdir -p $ROOTFS/sdcard
-          mount_safe "busybox mount --bind /sdcard" "$ROOTFS/sdcard"
+          mkdir -p $CHROOT_TARGET/sdcard
+          mount_safe "busybox mount --bind /sdcard" "$CHROOT_TARGET/sdcard"
         fi
         
         # External SD detection
-        if ! is_mounted "$ROOTFS/external_sd"; then
+        if ! is_mounted "$CHROOT_TARGET/external_sd"; then
           echo "[*] Checking for external SD..."
           for dir in /storage/*; do
             base=$(busybox basename "$dir")
             if [ "$base" != "emulated" ] && [ "$base" != "self" ] && [ -d "$dir" ]; then
               echo "[+] Found external storage at $dir"
-              mkdir -p $ROOTFS/external_sd
-              if busybox mount --bind "$dir" $ROOTFS/external_sd 2>/dev/null; then
+              mkdir -p $CHROOT_TARGET/external_sd
+              if busybox mount --bind "$dir" $CHROOT_TARGET/external_sd 2>/dev/null; then
                 echo "[+] Mounted external SD"
                 MOUNTED_EXTERNAL_SD=1
                 break
@@ -426,30 +454,30 @@ jobs:
         # Enter chroot
         echo "[*] Entering chroot..."
 
-        if [ -x "$ROOTFS/bin/sh" ]; then
-            busybox chroot "$ROOTFS" /bin/sh -c ". /fix-network.sh 2>/dev/null; exec /bin/sh"
+        if [ -x "$CHROOT_TARGET/bin/sh" ]; then
+            busybox chroot "$CHROOT_TARGET" /bin/sh -c ". /fix-network.sh 2>/dev/null; exec /bin/sh"
         else
-            busybox chroot "$ROOTFS" /bin/bash -c "source /fix-network.sh 2>/dev/null; exec bash --login"
+            busybox chroot "$CHROOT_TARGET" /bin/bash -c "source /fix-network.sh 2>/dev/null; exec bash --login"
         fi
 
         
         # Cleanup
         echo " "
         echo "[*] Cleaning up mounts..."
-        [ -d /dev/binderfs ] && busybox umount -l $ROOTFS/dev/binderfs 2>/dev/null
+        [ -d /dev/binderfs ] && busybox umount -l $CHROOT_TARGET/dev/binderfs 2>/dev/null
         
-        busybox umount $ROOTFS/dev/pts 2>/dev/null
-        busybox umount -l $ROOTFS/dev 2>/dev/null
-        busybox umount $ROOTFS/sys/fs/cgroup/devices 2>/dev/null
-        busybox umount $ROOTFS/sys/fs/cgroup 2>/dev/null
-        busybox umount $ROOTFS/sys 2>/dev/null
-        busybox umount $ROOTFS/proc 2>/dev/null
-        busybox umount $ROOTFS/sdcard 2>/dev/null
-        busybox umount $ROOTFS/dev/shm
+        busybox umount $CHROOT_TARGET/dev/pts 2>/dev/null
+        busybox umount -l $CHROOT_TARGET/dev 2>/dev/null
+        busybox umount $CHROOT_TARGET/sys/fs/cgroup/devices 2>/dev/null
+        busybox umount $CHROOT_TARGET/sys/fs/cgroup 2>/dev/null
+        busybox umount $CHROOT_TARGET/sys 2>/dev/null
+        busybox umount $CHROOT_TARGET/proc 2>/dev/null
+        busybox umount $CHROOT_TARGET/sdcard 2>/dev/null
+        busybox umount $CHROOT_TARGET/dev/shm
         
-        [ "$MOUNTED_EXTERNAL_SD" = "1" ] && busybox umount $ROOTFS/external_sd 2>/dev/null
+        [ "$MOUNTED_EXTERNAL_SD" = "1" ] && busybox umount $CHROOT_TARGET/external_sd 2>/dev/null
         
-        busybox umount $ROOTFS 2>/dev/null
+        busybox umount $CHROOT_TARGET 2>/dev/null
         
         # Lock file will be removed by trap
         echo "[+] Done."
